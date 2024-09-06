@@ -1,91 +1,3 @@
-// import { Injectable } from '@nestjs/common';
-// import Stripe from 'stripe';
-// import { DbService } from '../db/db.service';
-
-// @Injectable()
-// export class StripeService {
-//   private stripe: Stripe;
-
-//   constructor(private db: DbService) {
-//     this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-//       apiVersion: '2024-06-20',
-//     });
-//   }
-
-//   async handleSubscription(email: string, paymentMethodId: string) {
-//     let user = await this.db.user.findUnique({
-//       where: { email },
-//       include: { subscriptions: true },
-//     });
-
-//     let stripeCustomerId: string;
-
-//     if (!user) {
-//       const stripeCustomer = await this.stripe.customers.create({
-//         email,
-//         payment_method: paymentMethodId,
-//         invoice_settings: {
-//           default_payment_method: paymentMethodId,
-//         },
-//       });
-
-//       user = await this.db.user.create({
-//         data: {
-//           email,
-//           subscriptions: {
-//             create: {
-//               stripeId: stripeCustomer.id,
-//               status: 'pending',
-//             },
-//           },
-//         },
-//         include: { subscriptions: true },
-//       });
-
-//       stripeCustomerId = stripeCustomer.id;
-//     } else {
-//       stripeCustomerId =
-//         user.subscriptions.length > 0 ? user.subscriptions[0].stripeId : '';
-
-//       if (!stripeCustomerId) {
-//         const stripeCustomer = await this.stripe.customers.create({
-//           email,
-//           payment_method: paymentMethodId,
-//           invoice_settings: {
-//             default_payment_method: paymentMethodId,
-//           },
-//         });
-
-//         stripeCustomerId = stripeCustomer.id;
-//       }
-//     }
-
-//     const subscription = await this.stripe.subscriptions.create({
-//       customer: stripeCustomerId,
-//       items: [{ price: 'price_1JQ8BLA2vBX30cKhZG5S8Rhl' }],
-//       expand: ['latest_invoice.payment_intent'],
-//     });
-
-//     await this.db.subscription.create({
-//       data: {
-//         userId: user.id,
-//         stripeId: subscription.id,
-//         status: subscription.status,
-//       },
-//     });
-
-//     return subscription;
-//   }
-
-//   async constructEvent(payload: Buffer, signature: string) {
-//     return this.stripe.webhooks.constructEvent(
-//       payload,
-//       signature,
-//       process.env.STRIPE_WEBHOOK_SECRET,
-//     );
-//   }
-// }
-
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import Stripe from 'stripe';
 import { DbService } from '../db/db.service';
@@ -102,20 +14,17 @@ export class StripeService {
 
   async createCustomer(email: string) {
     try {
-      // Check if the user already exists
       let user = await this.db.user.findUnique({
         where: { email },
       });
 
       if (user) {
         console.log(`User with email ${email} already exists.`);
-        return user; // Return the existing user
+        return user;
       }
 
-      // Create a new customer in Stripe
       const customer = await this.stripe.customers.create({ email });
 
-      // Create a new user in the database
       user = await this.db.user.create({
         data: {
           email,
@@ -158,7 +67,6 @@ export class StripeService {
           invoice.payment_intent &&
           typeof invoice.payment_intent !== 'string'
         ) {
-          // Now it's safe to access client_secret
           const paymentIntent = invoice.payment_intent as Stripe.PaymentIntent;
           clientSecret = paymentIntent.client_secret;
         }
