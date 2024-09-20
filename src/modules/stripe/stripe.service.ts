@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import Stripe from 'stripe';
 import { DbService } from '../db/db.service';
+import { addMonths } from 'date-fns';
 
 @Injectable()
 export class StripeService {
@@ -12,23 +13,40 @@ export class StripeService {
     });
   }
 
-  async createCustomer(email: string) {
+  async createCustomer(email: string, paymentMethodId: string) {
     try {
+      if (!paymentMethodId) {
+        throw new Error('paymentMethodId is required but was not provided');
+      }
+
       let user = await this.db.user.findUnique({
         where: { email },
       });
 
+      let customer;
+
       if (user) {
-        console.log(`User with email ${email} already exists.`);
-        return user;
+        customer = await this.stripe.customers.retrieve(user.stripeCustomerId);
+      } else {
+        customer = await this.stripe.customers.create({
+          email,
+        });
+
+        user = await this.db.user.create({
+          data: {
+            email,
+            stripeCustomerId: customer.id,
+          },
+        });
       }
 
-      const customer = await this.stripe.customers.create({ email });
+      await this.stripe.paymentMethods.attach(paymentMethodId, {
+        customer: customer.id,
+      });
 
-      user = await this.db.user.create({
-        data: {
-          email,
-          stripeCustomerId: customer.id,
+      await this.stripe.customers.update(customer.id, {
+        invoice_settings: {
+          default_payment_method: paymentMethodId,
         },
       });
 
@@ -39,14 +57,23 @@ export class StripeService {
     }
   }
 
-  async createSubscription(userId: number, priceId: string) {
+  async createSubscription(
+    email: string,
+    priceId: string,
+    paymentMethodId: string,
+  ) {
     try {
-      const user = await this.db.user.findUnique({
-        where: { id: userId },
+      const user = await this.createCustomer(email, paymentMethodId);
+
+      const existingSubscription = await this.db.subscription.findFirst({
+        where: {
+          userId: user.id,
+          status: 'active',
+        },
       });
 
-      if (!user || !user.stripeCustomerId) {
-        throw new Error('User or Stripe customer ID not found');
+      if (existingSubscription) {
+        throw new Error('You already have an active subscription.');
       }
 
       const subscription = await this.stripe.subscriptions.create({
@@ -76,8 +103,22 @@ export class StripeService {
         throw new Error('Failed to retrieve client secret from Stripe');
       }
 
+      const currentDate = new Date();
+      const currentPeriodEnd = addMonths(currentDate, 1);
+
+      const savedSubscription = await this.db.subscription.create({
+        data: {
+          user: {
+            connect: { id: user.id },
+          },
+          stripeId: subscription.id,
+          status: 'active',
+          currentPeriodEnd,
+        },
+      });
+
       return {
-        subscriptionId: subscription.id,
+        subscriptionId: savedSubscription.id,
         clientSecret,
       };
     } catch (error) {
@@ -87,7 +128,7 @@ export class StripeService {
   }
 
   async createPaymentIntent(amount: number): Promise<{ clientSecret: string }> {
-    console.log('Amount received:', amount, typeof amount); // Should log: 1099 'number'
+    console.log('Amount received:', amount, typeof amount);
 
     try {
       const paymentIntent = await this.stripe.paymentIntents.create({
@@ -106,6 +147,18 @@ export class StripeService {
 
   async handlePaymentSucceeded(event: Stripe.Event) {
     const paymentIntent = event.data.object as Stripe.PaymentIntent;
+    const stripeChargeId = paymentIntent.id;
+
+    const existingCharge = await this.db.charge.findUnique({
+      where: { stripeChargeId },
+    });
+
+    if (existingCharge) {
+      console.log(
+        `Charge with stripeChargeId ${stripeChargeId} already exists`,
+      );
+      return;
+    }
 
     const subscription = await this.db.subscription.findUnique({
       //@ts-ignore
@@ -118,39 +171,96 @@ export class StripeService {
 
     await this.db.charge.create({
       data: {
-        stripeChargeId: paymentIntent.id,
+        stripeChargeId,
         subscriptionId: subscription.id,
       },
     });
 
     if (paymentIntent.status === 'succeeded') {
+      const newPeriodEnd = addMonths(subscription.currentPeriodEnd, 1);
       await this.db.subscription.update({
         where: { id: subscription.id },
-        data: { status: 'active' },
+        data: { status: 'active', currentPeriodEnd: newPeriodEnd },
       });
     }
   }
 
   async handleWebhook(event: Stripe.Event) {
-    // switch (event.type) {
-    //   case 'invoice.payment_succeeded':
-    //     await this.handlePaymentSucceeded(event);
-    //     break;
-    //   default:
-    //     console.log(`Unhandled event type ${event.type}`);
-    // }
+    try {
+      const existingEvent = await this.db.charge.findUnique({
+        where: { stripeChargeId: event.id },
+      });
 
-    switch (event.type) {
-      case 'payment_intent.succeeded':
-        const paymentIntent = event.data.object as Stripe.PaymentIntent;
-        console.log('PaymentIntent was successful:', paymentIntent);
-        break;
-      case 'payment_intent.payment_failed':
-        const failedPaymentIntent = event.data.object as Stripe.PaymentIntent;
-        console.error('PaymentIntent failed:', failedPaymentIntent);
-        break;
-      default:
-        console.log(`Unhandled event type: ${event.type}`);
+      if (existingEvent) {
+        console.log(`Event ${event.id} already handled`);
+        return;
+      }
+      switch (event.type) {
+        case 'invoice.payment_succeeded': {
+          const invoice = event.data.object as Stripe.Invoice;
+          const subscriptionId = invoice.subscription as string;
+
+          const subscription = await this.db.subscription.findUnique({
+            where: { stripeId: subscriptionId },
+          });
+
+          if (!subscription) {
+            throw new Error('Subscription not found');
+          }
+
+          await this.db.charge.create({
+            data: {
+              stripeChargeId: invoice.payment_intent as string,
+              subscriptionId: subscription.id,
+            },
+          });
+
+          const newPeriodEnd = addMonths(subscription.currentPeriodEnd, 1);
+          await this.db.subscription.update({
+            where: { id: subscription.id },
+            data: {
+              status: 'active',
+              currentPeriodEnd: newPeriodEnd,
+            },
+          });
+
+          console.log(`Subscription ${subscription.id} successfully renewed.`);
+          break;
+        }
+        case 'invoice.payment_failed': {
+          const invoice = event.data.object as Stripe.Invoice;
+          const subscriptionId = invoice.subscription as string;
+
+          await this.db.subscription.update({
+            where: { stripeId: subscriptionId },
+            data: { status: 'inactive' },
+          });
+
+          console.error(`Payment failed for subscription: ${subscriptionId}`);
+          break;
+        }
+        case 'customer.subscription.updated': {
+          const subscription = event.data.object as Stripe.Subscription;
+
+          await this.db.subscription.update({
+            where: { stripeId: subscription.id },
+            data: {
+              status: subscription.status,
+              currentPeriodEnd: new Date(
+                subscription.current_period_end * 1000,
+              ),
+            },
+          });
+
+          console.log(`Subscription ${subscription.id} updated.`);
+          break;
+        }
+
+        default:
+          console.log(`Unhandled event type: ${event.type}`);
+      }
+    } catch (error) {
+      console.error(`Error handling webhook event: ${error.message}`);
     }
   }
 }

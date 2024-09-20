@@ -21,6 +21,7 @@ model Subscription {
   status      String
   stripeId    String       @unique
   charges     Charge[]
+  currentPeriodEnd DateTime
 }
 
 model Charge {

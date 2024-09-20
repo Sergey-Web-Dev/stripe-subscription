@@ -6,32 +6,26 @@ import { Request, Response } from 'express';
 export class StripeController {
   constructor(private readonly stripeService: StripeService) {}
 
-  @Post('create-PaymentIntent')
-  async createPaymentIntent(@Body('amount') amount: number) {
-    return await this.stripeService.createPaymentIntent(amount);
-  }
-
-  @Post('create-customer')
-  async createCustomer(@Body('email') email: string) {
-    const user = await this.stripeService.createCustomer(email);
-    return {
-      message: 'Customer created successfully',
-      user,
-    };
-  }
-
-  @Post('create-subscription/:userId')
+  @Post('create-subscription')
   async createSubscription(
-    @Param('userId') userId: number,
+    @Body('email') email: string,
+    @Body('paymentMethodId') paymentMethodId: string,
     @Body('priceId') priceId: string,
   ) {
+    if (!paymentMethodId) {
+      throw new Error('paymentMethodId is required but was not provided');
+    }
+
     const subscription = await this.stripeService.createSubscription(
-      userId,
+      email,
       priceId,
+      paymentMethodId,
     );
+
     return {
       message: 'Subscription created successfully',
-      subscription,
+      subscriptionId: subscription.subscriptionId,
+      clientSecret: subscription.clientSecret,
     };
   }
 

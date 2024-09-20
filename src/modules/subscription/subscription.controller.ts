@@ -1,28 +1,16 @@
-// import { Controller, Post, Body, BadRequestException } from '@nestjs/common';
-// import { StripeService } from '../stripe/stripe.service';
+import { Controller, Get, Param } from '@nestjs/common';
+import { SubscriptionService } from './subscription.service';
 
-// @Controller('subscription')
-// export class SubscriptionController {
-//   constructor(private readonly stripeService: StripeService) {}
+@Controller('subscription')
+export class SubscriptionController {
+  constructor(private readonly subscriptionService: SubscriptionService) {}
 
-//   @Post('create')
-//   async createSubscription(
-//     @Body() createSubscriptionDto: { email: string; paymentMethodId: string },
-//   ) {
-//     const { email, paymentMethodId } = createSubscriptionDto;
-
-//     if (!email || !paymentMethodId) {
-//       throw new BadRequestException('Email and payment method ID are required');
-//     }
-
-//     try {
-//       const subscription = await this.stripeService.handleSubscription(
-//         email,
-//         paymentMethodId,
-//       );
-//       return subscription;
-//     } catch (error) {
-//       throw new BadRequestException(error.message);
-//     }
-//   }
-// }
+  @Get('subscriptions/status/:userId')
+  async getSubscriptionStatus(@Param('userId') userId: number) {
+    const isActive =
+      await this.subscriptionService.isSubscriptionActive(+userId);
+    return {
+      active: isActive,
+    };
+  }
+}

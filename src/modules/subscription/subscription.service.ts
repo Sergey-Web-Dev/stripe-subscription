@@ -1,24 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { DbService } from '../db/db.service';
+import { isBefore } from 'date-fns';
 
 @Injectable()
 export class SubscriptionService {
   constructor(private db: DbService) {}
 
-  async createSubscription(userId: number, stripeId: string) {
-    return this.db.subscription.create({
-      data: {
-        userId,
-        stripeId,
-        status: 'active',
-      },
+  async isSubscriptionActive(userId: number) {
+    const subscription = await this.db.subscription.findFirst({
+      where: { userId, status: 'active' },
     });
-  }
 
-  async updateSubscriptionStatus(stripeId: string, status: string) {
-    return this.db.subscription.update({
-      where: { stripeId },
-      data: { status },
-    });
+    if (!subscription || isBefore(new Date(), subscription.currentPeriodEnd)) {
+      return false;
+    }
+
+    return true;
   }
 }
