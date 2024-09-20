@@ -127,64 +127,6 @@ export class StripeService {
     }
   }
 
-  async createPaymentIntent(amount: number): Promise<{ clientSecret: string }> {
-    console.log('Amount received:', amount, typeof amount);
-
-    try {
-      const paymentIntent = await this.stripe.paymentIntents.create({
-        amount,
-        currency: 'usd',
-        automatic_payment_methods: { enabled: true },
-      });
-      return { clientSecret: paymentIntent.client_secret };
-    } catch (error) {
-      throw new HttpException(
-        { message: `Internal Server Error: ${error.message}` },
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
-  }
-
-  async handlePaymentSucceeded(event: Stripe.Event) {
-    const paymentIntent = event.data.object as Stripe.PaymentIntent;
-    const stripeChargeId = paymentIntent.id;
-
-    const existingCharge = await this.db.charge.findUnique({
-      where: { stripeChargeId },
-    });
-
-    if (existingCharge) {
-      console.log(
-        `Charge with stripeChargeId ${stripeChargeId} already exists`,
-      );
-      return;
-    }
-
-    const subscription = await this.db.subscription.findUnique({
-      //@ts-ignore
-      where: { stripeId: paymentIntent.subscription as string },
-    });
-
-    if (!subscription) {
-      throw new Error('Subscription not found');
-    }
-
-    await this.db.charge.create({
-      data: {
-        stripeChargeId,
-        subscriptionId: subscription.id,
-      },
-    });
-
-    if (paymentIntent.status === 'succeeded') {
-      const newPeriodEnd = addMonths(subscription.currentPeriodEnd, 1);
-      await this.db.subscription.update({
-        where: { id: subscription.id },
-        data: { status: 'active', currentPeriodEnd: newPeriodEnd },
-      });
-    }
-  }
-
   async handleWebhook(event: Stripe.Event) {
     try {
       const existingEvent = await this.db.charge.findUnique({
